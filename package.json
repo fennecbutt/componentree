@@ -1,0 +1,15 @@
+{
+  "name": "componentree-test",
+  "version": "0.0.0",
+  "description": "A component based decorator-driven injection framework.",
+  "main": "build/componentry.js",
+  "dependencies": {
+    "glob-promise": "^3.4.0"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Fennec Cooper",
+  "license": "GPLv2"
+}
