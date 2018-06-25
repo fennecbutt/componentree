@@ -4,9 +4,12 @@
   "description": "A component based decorator-driven injection framework.",
   "main": "build/componentry.js",
   "dependencies": {
+    "glob": "^7.1.2",
     "glob-promise": "^3.4.0"
   },
-  "devDependencies": {},
+  "devDependencies": {
+    "nyc": "^12.0.2"
+  },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
