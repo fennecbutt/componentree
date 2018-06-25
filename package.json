@@ -1,5 +1,5 @@
 {
-  "name": "componentree-test",
+  "name": "componentree",
   "version": "0.0.0",
   "description": "A component based decorator-driven injection framework.",
   "main": "build/componentry.js",
