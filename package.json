@@ -2,7 +2,7 @@
   "name": "componentree",
   "version": "0.0.0",
   "description": "A component based decorator-driven injection framework.",
-  "main": "build/componentry.js",
+  "main": "build/componentree.js",
   "dependencies": {
     "glob": "^7.1.2",
     "glob-promise": "^3.4.0"
@@ -11,8 +11,10 @@
     "nyc": "^12.0.2"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "tsc"
   },
   "author": "Fennec Cooper",
-  "license": "GPLv2"
+  "license": "GPLv2",
+  "types": "build/componentree.d.ts"
 }
