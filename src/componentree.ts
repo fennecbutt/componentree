@@ -1,6 +1,6 @@
 /**
  * @author Fennec Cooper
- * @email 
+ * @email
  * @create date 2018-10-02 19:26:32
  * @modify date 2018-10-02 19:26:32
  * @desc [description]
@@ -14,7 +14,7 @@ export interface ComponentreeConfiguration {
     errorHandler?: (e: any) => any;
 }
 
-export type Newable = new()=> any;
+export type Newable = new () => any;
 
 export interface Component extends Newable {
     type?: string;
@@ -54,8 +54,8 @@ export class Componentree {
         })().catch(e => this.config.errorHandler instanceof Function ? this.config.errorHandler(e) : console.log(e.stack || e));
     }
 
-    protected GenerateManifest(){
-        return Array.from(this.components).map(component=>0)
+    protected GenerateManifest() {
+        return Array.from(this.components).map(component => 0)
     }
 
     protected Log(message: any, ...optionalParams: any[]) {
@@ -73,34 +73,28 @@ export class Componentree {
         this.components.set(component.name, this.MakeComponentContainer(<Component>component, source));
     }
 
-    protected GetInjectionNames(t: Component){
+    protected GetInjectionNames(t: Component) {
         const matches = t.toString().match(/constructor.*?\(([^)]*)\)/);
         if (matches && matches.length === 2) {
             return matches[1].replace(/\s/g, '').split(',').filter(n => n.length > 0);
-        }else throw new Error(`Component is not a class: ${JSON.stringify(t)}`);
+        } else throw new Error(`Component is not a class: ${JSON.stringify(t)}`);
     }
 
-    protected Inject(t: Component) {
-        const injections: Object[] = [];
-        const matches = t.toString().match(/constructor.*?\(([^)]*)\)/);
-        if (matches && matches.length === 2) {
-            const injectionNames = matches[1].replace(/\s/g, '').split(',').filter(n => n.length > 0);
-            injectionNames.map(name => {
-               /**
-                 * NOTE source tracking for components is implemented by the source property in
-                 * ComponentContainer, but I haven't thought of a good way of how to get it yet
-                 * since components autonomously register. For the moment the stack trace will suffice.
-                 */
-                if (!this.components.has(name)) throw new Error(`Could not find component: ${name} in component ${t.name}`);
-                if (this.components.get(name)!.component.service) {
-                    if (!this.services.get(name)) this.services.set(name, this.Inject(this.components.get(name)!.component));
-                    injections.push(this.services.get(name));
-                } else {
-                    injections.push(this.Inject(this.components.get(name)!.component));
-                }
-            });
-        }
-        return Reflect.construct(t, injections);
+    protected Inject<T>(t: Component): T {
+        return Reflect.construct(t, this.GetInjectionNames(t).map(name => {
+            /**
+              * NOTE source tracking for components is implemented by the source property in
+              * ComponentContainer, but I haven't thought of a good way of how to get it yet
+              * since components autonomously register. For the moment the stack trace will suffice.
+              */
+            if (!this.components.has(name)) throw new Error(`Could not find component: ${name} in component ${t.name}`);
+            if (this.components.get(name)!.component.service) {
+                if (!this.services.get(name)) this.services.set(name, this.Inject(this.components.get(name)!.component));
+                return this.services.get(name);
+            } else {
+                return this.Inject(this.components.get(name)!.component);
+            }
+        }));
     }
 
     protected SafelyGetComponent(name: string) {
@@ -145,7 +139,7 @@ export function tag(...tags: string[]) {
 // NOTE for init of component a that requires components b and c that init, b and c init promises must be resolved before a init is called (makes sense!)
 // What about multiple inits on a component? Just arbitrary order I guess, if we want a specific order use 1 init and branch from there
 // What about arguments to these fns? Call with none, I suppose
-export function init(t: Component, key: string, desc: PropertyDescriptor){
+export function init(t: Component, key: string, desc: PropertyDescriptor) {
     // if(!t.service) throw new Error(`Component ${t.name} must be a service to use init`); // This doesn't seem great. Could we automatically make things that use init functions services?
     service(t);
     (t.inits || (t.inits = [])) && t.inits.push(key); // NOTE find a more elegant way of doing this
