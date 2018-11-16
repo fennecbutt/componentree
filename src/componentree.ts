@@ -14,12 +14,13 @@ export interface ComponentreeConfiguration {
     errorHandler?: (e: any) => any;
 }
 
-export type Newable = new () => any;
+export type Newable = new (...args: any[]) => any;
 
 export interface Component extends Newable {
     type?: string;
     service?: boolean;
     tags?: string[];
+    noinjects?: (string | symbol)[];
     inits?: string[];
 }
 
@@ -34,26 +35,29 @@ const defaultConfiguration = {
     base: 'c' // NOTE force base of c or override with componentree.json?
 }
 
+global.register = (component: Component) => (global.earlyComponents || (global.earlyComponents = [])) && global.earlyComponents.push(component);
+
 @service
 export class Componentree {
     protected components: Map<string, ComponentContainer> = new Map([[Componentree.name, this.MakeComponentContainer(<Component>Componentree, __filename)]]);
     protected instances: any[] = [];
     protected services: Map<string, any> = new Map([[Componentree.name, this]]);
 
-    constructor(private config: ComponentreeConfiguration = defaultConfiguration) {
+    constructor(@noinject private config: ComponentreeConfiguration = defaultConfiguration) {
         this.config = { ...defaultConfiguration, ...this.config };
         global.register = this.Register.bind(this);
+        global.earlyComponents = global.earlyComponents.filter(component => this.Register(component));
         (async () => {
             // 1 Load files
             const filesLoaded = (await glob(`**/*.${this.config.base}.js`)).map(file => require(`${process.cwd()}/${file}`) && this.Log(`Loaded ${file}`)).length;
             // 2 Validate injections and inits (checks they exist, checks for circularity/codependence)
             if (filesLoaded === 0) this.Log('Loaded 0 files!');
             // 2 Instantiate services (ordered by inits)
-            Array.from(this.components.values()).map(container => container.component.service && this.instances.push(this.Inject(container.component)));
+            Array.from(this.components.values()).map(container => container.component.service && !this.services.has(container.component.name) && this.instances.push(this.Inject(container.component)));
             // 3 Initialise services
         })().catch(e => this.config.errorHandler instanceof Function ? this.config.errorHandler(e) : console.log(e.stack || e));
     }
-
+    // TODO default params break injection, componentree loops and keeps instantiating itself
     protected GenerateManifest() {
         return Array.from(this.components).map(component => 0)
     }
@@ -69,19 +73,20 @@ export class Componentree {
         }
     }
 
-    Register(component: { new(): any }, source: String | null = null) {
+    Register(component: Component, source: String | null = null) {
         this.components.set(component.name, this.MakeComponentContainer(<Component>component, source));
     }
 
     protected GetInjectionNames(t: Component) {
         const matches = t.toString().match(/constructor.*?\(([^)]*)\)/);
         if (matches && matches.length === 2) {
-            return matches[1].replace(/\s/g, '').split(',').filter(n => n.length > 0);
+            return matches[1].replace(/\s/g, '').split(',').filter(n => (!t.noinjects || t.noinjects.indexOf(n) === -1) && n.length > 0); // NOTE change indexof here to includes once TS plays nice again
         } else throw new Error(`Component is not a class: ${JSON.stringify(t)}`);
     }
 
     protected Inject<T>(t: Component): T {
         return Reflect.construct(t, this.GetInjectionNames(t).map(name => {
+            console.log('Injecting', name);
             /**
               * NOTE source tracking for components is implemented by the source property in
               * ComponentContainer, but I haven't thought of a good way of how to get it yet
@@ -127,6 +132,7 @@ export function component(t: Component) {
 }
 
 export function service(t: Component) {
+    if (t.type !== 'component') component(t); // NOTE component here should be a string enum! (Or a string literal)
     t.service = true;
 }
 
@@ -143,6 +149,10 @@ export function init(t: Component, key: string, desc: PropertyDescriptor) {
     // if(!t.service) throw new Error(`Component ${t.name} must be a service to use init`); // This doesn't seem great. Could we automatically make things that use init functions services?
     service(t);
     (t.inits || (t.inits = [])) && t.inits.push(key); // NOTE find a more elegant way of doing this
+}
+
+export function noinject(t: Component, key: string | symbol, index: number) {
+    (t.noinjects || (t.noinjects = [])) && t.noinjects.push(key);
 }
 
 // For init, load order needs to be changed
