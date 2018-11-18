@@ -7,6 +7,7 @@
 */
 
 import glob from 'glob-promise';
+import { map as mapAsync } from 'bluebird';
 
 export interface ComponentreeConfiguration {
     base?: string;
@@ -14,13 +15,17 @@ export interface ComponentreeConfiguration {
     errorHandler?: (e: any) => any;
 }
 
-export type Newable = new (...args: any[]) => any;
+export type Newable<T> = new (...args: any[]) => T;
 
-export interface Component extends Newable {
+export interface Component<T = any> extends Newable<T> {
     type?: string;
     service?: boolean;
     tags?: string[];
     noinjects?: (string | symbol)[];
+    initialisers?: string[];
+}
+
+export interface InternalComponentInstance {
     inits?: string[];
 }
 
@@ -53,14 +58,14 @@ export class Componentree {
             // 2 Validate injections and inits (checks they exist, checks for circularity/codependence)
             if (filesLoaded === 0) this.Log('Loaded 0 files!');
             // 2 Instantiate services (ordered by inits)
-            Array.from(this.components.values()).map(container => container.component.service && !this.services.has(container.component.name) && this.instances.push(this.Inject(container.component)));
+            this.instances.push(await mapAsync(Array.from(this.components.values()).filter(container => container.component.service && !this.services.has(container.component.name)), container => this.Inject(container.component)));
             // 3 Initialise services
         })().catch(e => this.config.errorHandler instanceof Function ? this.config.errorHandler(e) : console.log(e.stack || e));
     }
     // TODO default params break injection, componentree loops and keeps instantiating itself
-    protected GenerateManifest() {
-        return Array.from(this.components).map(component => 0)
-    }
+    // protected GenerateManifest() {
+    //     return Array.from(this.components).map(component => 0);
+    // }
 
     protected Log(message: any, ...optionalParams: any[]) {
         if (this.config.debug) console.log.apply(undefined, arguments);
@@ -78,15 +83,15 @@ export class Componentree {
     }
 
     protected GetInjectionNames(t: Component) {
+        // NOTE once the reflection stuff is working properly, we can switch to stringifying the constructor as a fallback
         const matches = t.toString().match(/constructor.*?\(([^)]*)\)/);
         if (matches && matches.length === 2) {
             return matches[1].replace(/\s/g, '').split(',').filter(n => (!t.noinjects || t.noinjects.indexOf(n) === -1) && n.length > 0); // NOTE change indexof here to includes once TS plays nice again
         } else throw new Error(`Component is not a class: ${JSON.stringify(t)}`);
     }
 
-    protected Inject<T>(t: Component): T {
-        return Reflect.construct(t, this.GetInjectionNames(t).map(name => {
-            console.log('Injecting', name);
+    protected async Inject<T>(t: Component): Promise<T> {
+        const instance = Reflect.construct(t, await mapAsync(this.GetInjectionNames(t), async name => {
             /**
               * NOTE source tracking for components is implemented by the source property in
               * ComponentContainer, but I haven't thought of a good way of how to get it yet
@@ -94,12 +99,16 @@ export class Componentree {
               */
             if (!this.components.has(name)) throw new Error(`Could not find component: ${name} in component ${t.name}`);
             if (this.components.get(name)!.component.service) {
-                if (!this.services.get(name)) this.services.set(name, this.Inject(this.components.get(name)!.component));
+                if (!this.services.get(name)) this.services.set(name, await this.Inject(this.components.get(name)!.component));
                 return this.services.get(name);
             } else {
-                return this.Inject(this.components.get(name)!.component);
+                return await this.Inject(this.components.get(name)!.component);
             }
         }));
+        if (t.initialisers) {
+            await Promise.all(t.initialisers.map(initialiser => instance[initialiser]()));
+        }
+        return instance;
     }
 
     protected SafelyGetComponent(name: string) {
@@ -111,8 +120,8 @@ export class Componentree {
         return this.SafelyGetComponent(name);
     }
 
-    public GetInstance<T>(component: Component): T {
-        return this.Inject(component);
+    public GetInstance<T>(component: Component): Promise<T> {
+        return this.Inject<T>(component);
     }
 
     public GetByTags(...tags: string[]) {
@@ -145,10 +154,12 @@ export function tag(...tags: string[]) {
 // NOTE for init of component a that requires components b and c that init, b and c init promises must be resolved before a init is called (makes sense!)
 // What about multiple inits on a component? Just arbitrary order I guess, if we want a specific order use 1 init and branch from there
 // What about arguments to these fns? Call with none, I suppose
-export function init(t: Component, key: string, desc: PropertyDescriptor) {
+export function initialiser(t: any, key: string, desc: PropertyDescriptor) { // NOTE figure out the specific type of a prototype (without forcing prototype constructor's type to Function...) so that we can ensure that this decorator is only used on async methods!
     // if(!t.service) throw new Error(`Component ${t.name} must be a service to use init`); // This doesn't seem great. Could we automatically make things that use init functions services?
-    service(t);
-    (t.inits || (t.inits = [])) && t.inits.push(key); // NOTE find a more elegant way of doing this
+    // service(t); // NOTE need a way to get access to this here. Need to detect problems as much as possible.
+    // (t.inits || (t.inits = [])) && t.inits.push(key); // NOTE find a more elegant way of doing this
+    // console.log(` keys ${t.constructor} lol ${t.abc} k ${key} desc ${JSON.stringify(desc)}`);
+    (t.constructor.initialisers || (t.constructor.initialisers = [])) && t.constructor.initialisers.push(key);
 }
 
 export function noinject(t: Component, key: string | symbol, index: number) {
