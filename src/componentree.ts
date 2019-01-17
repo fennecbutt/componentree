@@ -18,9 +18,10 @@ export interface ComponentreeConfiguration {
 export type Newable<T> = new (...args: any[]) => T;
 
 export interface Component<T = any> extends Newable<T> {
+    [key: string]: any;
     type?: string;
     service?: boolean;
-    tags?: string[];
+    tags?: Set<string>;
     noinjects?: (string | symbol)[];
     initialisers?: string[];
 }
@@ -58,7 +59,13 @@ export class Componentree {
             // 2 Validate injections and inits (checks they exist, checks for circularity/codependence)
             if (filesLoaded === 0) this.Log('Loaded 0 files!');
             // 2 Instantiate services (ordered by inits)
-            this.instances.push(await mapAsync(Array.from(this.components.values()).filter(container => container.component.service && !this.services.has(container.component.name)), container => this.Inject(container.component)));
+            await mapAsync(Array.from(this.components.values()).filter(container => container.component.service), async container => {
+                if (!this.services.has(container.component.name)) {
+                    console.log(`Starting service ${container.component.name}`);
+                    this.services.set(container.component.name, await this.Inject(container.component));
+                    console.log(`Started service ${container.component.name}`);
+                }
+            });
             // 3 Initialise services
         })().catch(e => this.config.errorHandler instanceof Function ? this.config.errorHandler(e) : console.log(e.stack || e));
     }
@@ -68,7 +75,7 @@ export class Componentree {
     // }
 
     protected Log(message: any, ...optionalParams: any[]) {
-        if (this.config.debug) console.log.apply(undefined, arguments);
+        if (this.config.debug) console.log(...arguments);
     }
 
     protected MakeComponentContainer(component: Component, source: String | null = null): ComponentContainer {
@@ -84,10 +91,12 @@ export class Componentree {
 
     protected GetInjectionNames(t: Component) {
         // NOTE once the reflection stuff is working properly, we can switch to stringifying the constructor as a fallback
-        const matches = t.toString().match(/constructor.*?\(([^)]*)\)/);
+        const stringified = t.toString();
+        if (stringified.indexOf(`class ${t.name}`) !== 0) throw new Error(`Component is not a class: ${JSON.stringify(t)}`);
+        const matches = stringified.match(/constructor.*?\(([^)]*)\)/);
         if (matches && matches.length === 2) {
             return matches[1].replace(/\s/g, '').split(',').filter(n => (!t.noinjects || t.noinjects.indexOf(n) === -1) && n.length > 0); // NOTE change indexof here to includes once TS plays nice again
-        } else throw new Error(`Component is not a class: ${JSON.stringify(t)}`);
+        } else return [];
     }
 
     protected async Inject<T>(t: Component): Promise<T> {
@@ -106,7 +115,9 @@ export class Componentree {
             }
         }));
         if (t.initialisers) {
+            this.Log(`Initialising ${t.name}`);
             await Promise.all(t.initialisers.map(initialiser => instance[initialiser]()));
+            this.Log(`${t.name} initialised`);
         }
         return instance;
     }
@@ -125,18 +136,17 @@ export class Componentree {
     }
 
     public GetByTags(...tags: string[]) {
-        return Array.from(this.components.values()).filter(container => container.component.tags && container.component.tags.length !== 0 && container.component.tags.every(tag => tags.indexOf(tag) !== -1));
+        return Array.from(this.components.values()).filter(container => container.component.tags && container.component.tags.size !== 0 && tags.every(tag => container.component.tags!.has(tag)));
     }
 
-    public GetByInheritance(inherits: any, ...tags: string[]) {
-        return Array.from(this.components.values()).filter(container => container.component.prototype instanceof inherits && (tags.length === 0 || container.component.tags && container.component.tags.every(tag => tags.indexOf(tag) !== -1))).map(container => container.component);
+    public GetByInheritance<T>(inherits: any, ...tags: string[]) {
+        return <T[]><unknown>Array.from(this.components.values()).filter(container => container.component.prototype instanceof inherits && (tags.length === 0 || container.component.tags && tags.every(tag => container.component.tags!.has(tag)))).map(container => container.component);
     }
 }
 
 // NOTE change all decorators to use a common metadata function, expose this to components to help them modify component metadata in a protected way
 export function component(t: Component) {
     t.type = 'component'
-    t.tags = [];
     global.register(t);
 }
 
@@ -147,7 +157,7 @@ export function service(t: Component) {
 
 export function tag(...tags: string[]) {
     return (t: Component) => {
-        (t.tags || (t.tags = [])) && (t.tags = t.tags.concat(tags));
+        (t.tags || (t.tags = new Set())) && (tags.forEach(tag => t.tags!.add(tag)));
     }
 }
 
