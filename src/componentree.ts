@@ -35,6 +35,8 @@ export interface ComponentContainer {
     source: String | null;
 }
 
+type IndexedObject = { [key: string]: IndexedObject };
+
 // NOTE do we always want to search fs for components or do we want to use a manifest system, or both?
 // Could we search fs to load and build a manifest in dev and then use that manifest in prod? Probably a good idea
 const defaultConfiguration = {
@@ -43,12 +45,20 @@ const defaultConfiguration = {
 
 global.register = (component: Component) => (global.earlyComponents || (global.earlyComponents = [])) && global.earlyComponents.push(component);
 
+class CircularityError extends Error {
+    constructor(public dependencyChain: string[]) {
+        super();
+    }
+}
+
 @service
+@noinjectclass('config=defaultConfiguration')
 export class Componentree {
     protected components: Map<string, ComponentContainer> = new Map([[Componentree.name, this.MakeComponentContainer(<Component>Componentree, __filename)]]);
     protected instances: any[] = [];
     protected services: Map<string, any> = new Map([[Componentree.name, this]]);
 
+    // TYPESCRIPT WHY DO PARAMETER DECORATORS NO LONGER WORK?! (key is now always undefined)
     constructor(@noinject private config: ComponentreeConfiguration = defaultConfiguration) {
         this.config = { ...defaultConfiguration, ...this.config };
         global.register = this.Register.bind(this);
@@ -58,21 +68,62 @@ export class Componentree {
             const filesLoaded = (await glob(`**/*.${this.config.base}.js`)).map(file => require(`${process.cwd()}/${file}`) && this.Log(`Loaded ${file}`)).length;
             // 2 Validate injections and inits (checks they exist, checks for circularity/codependence)
             if (filesLoaded === 0) this.Log('Loaded 0 files!');
+            // Need a better/cleaner method to do the following, just short on time to do it
+            const circularityMessage = 'Circularity check';
+            let circularityErrors: number = 0;
+            this.components.forEach(componentContainer => {
+                try {
+                    this.GetInjectionTree(componentContainer.component);
+                } catch (e) {
+                    if (e instanceof CircularityError) {
+                        // Log the error
+                        ++circularityErrors;
+                        this.Log(`Circular dependency chain: ${e.dependencyChain.join('->')}`);
+                    } else {
+                        throw e;
+                    }
+                }
+            });
+            if (circularityErrors === 0) this.Log(`${circularityMessage} succeeded`);
+            else throw new Error(`${circularityMessage} failed with ${circularityErrors} error${circularityErrors === 1 ? '' : 's'}`);
+            // For each component, check for circularity
             // 2 Instantiate services (ordered by inits)
             await mapAsync(Array.from(this.components.values()).filter(container => container.component.service), async container => {
                 if (!this.services.has(container.component.name)) {
-                    console.log(`Starting service ${container.component.name}`);
+                    this.Log(`Starting service ${container.component.name}`);
                     this.services.set(container.component.name, await this.Inject(container.component));
-                    console.log(`Started service ${container.component.name}`);
+                    this.Log(`Started service ${container.component.name}`);
                 }
             });
             // 3 Initialise services
-        })().catch(e => this.config.errorHandler instanceof Function ? this.config.errorHandler(e) : console.log(e.stack || e));
+        })().catch(e => this.config.errorHandler instanceof Function ? this.config.errorHandler(e) : this.Log(e.stack || e));
     }
     // TODO default params break injection, componentree loops and keeps instantiating itself
     // protected GenerateManifest() {
     //     return Array.from(this.components).map(component => 0);
     // }
+
+    /**
+     * Builds and returns the tree of injections for a given component
+     * Use a more efficient method/structure for this in the future! (Although it only runs on start-up anyways)
+     */
+    private GetInjectionTree(component: Component, dependencyChain?: string[]) {
+        if (!dependencyChain) dependencyChain = [component.name]; // Create with parent as origin
+        const names = this.GetInjectionNames(component);
+        // Check for a collision with any members of the current injection set
+        names.forEach(name => {
+            /**
+             * Typescript, why can't you tell I'm checking and assigning to dependencyChain
+             * like LITERALLY a couple of lines above?
+             */
+            if (dependencyChain!.indexOf(name) > -1) throw new CircularityError(dependencyChain!.concat(name));
+        });
+        // No errors with this set, so branch and check the injections of each of the subsequent ones
+        return names ? names.reduce<IndexedObject>((p, c) => {
+            p[c] = this.GetInjectionTree(this.SafelyGetComponent(c), Array.from(dependencyChain!).concat(c)); // Copy the array so each branch of injections isn't modifying the chain for the other
+            return p;
+        }, {}) : {};
+    }
 
     protected Log(message: any, ...optionalParams: any[]) {
         if (this.config.debug) console.log(...arguments);
@@ -122,8 +173,8 @@ export class Componentree {
         return instance;
     }
 
-    protected SafelyGetComponent(name: string) {
-        if (!this.components.has(name)) throw new Error(`Could not find component: ${name}`)
+    protected SafelyGetComponent(name: string, parent?: string) {
+        if (!this.components.has(name)) throw new Error(`Could not find component: ${name} in ${parent || Componentree.name}`);
         return this.components.get(name)!.component;
     }
 
@@ -172,8 +223,14 @@ export function initialiser(t: any, key: string, desc: PropertyDescriptor) { // 
     (t.constructor.initialisers || (t.constructor.initialisers = [])) && t.constructor.initialisers.push(key);
 }
 
-export function noinject(t: Component, key: string | symbol, index: number) {
+export function noinject(t: Component, key: string, index: number) {
     (t.noinjects || (t.noinjects = [])) && t.noinjects.push(key);
+}
+
+export function noinjectclass(...noinjects: string[]) {
+    return (t: Component) => {
+        (t.noinjects || (t.noinjects = [])) && (t.noinjects = t.noinjects.concat(noinjects));
+    }
 }
 
 // For init, load order needs to be changed
@@ -182,5 +239,6 @@ export function noinject(t: Component, key: string | symbol, index: number) {
 // Instantiate services
 // Resolve init chains
 
-// What about inits not being used on services? Ie not during startup. Services are restricted to singletones at the moment, what if we wanted
+// What about inits not being used on services? Ie not during startup. Services are restricted to singletons at the moment, what if we wanted
 // To use init on a non-singleton component
+// ^ That would still work fine...
