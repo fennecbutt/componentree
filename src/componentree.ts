@@ -22,7 +22,7 @@ export interface Component<T = any> extends Newable<T> {
     type?: string;
     service?: boolean;
     tags?: Set<string>;
-    noinjects?: (string | symbol)[];
+    noinjects?: number[];
     initialisers?: string[];
 }
 
@@ -51,23 +51,57 @@ class CircularityError extends Error {
     }
 }
 
+enum ParameterType {
+    INJECTION,
+    DATA
+}
+
+/**
+ * Splits an array of items into an array of two arrays
+ * Where the first array contains items that sortFn returned true for
+ * and the second array contains items that sortFn returned false for
+ * @param items
+ * @param sortFn
+ */
+// function split<T>(items: T[], sortFn: (item: T) => boolean): [T[], T[]] {
+//     return items.reduce<[T[], T[]]>((splitItems, item) => {
+//         splitItems[sortFn(item) ? 1 : 0].push(item);
+//         return splitItems;
+//     }, [[], []]);
+// }
+
+async function findAsync<T, U= any>(items: T[], findFn: (item: T) => Promise<U>): Promise<U | undefined> {
+    let item: T | undefined = undefined;
+    for (let i = 0; i < items.length; i++) {
+        const result = await findFn(items[i]);
+        if (result) {
+            return result;
+        }
+    }
+    return undefined;
+}
+
 @service
-@noinjectclass('config=defaultConfiguration')
 export class Componentree {
     protected components: Map<string, ComponentContainer> = new Map([[Componentree.name, this.MakeComponentContainer(<Component>Componentree, __filename)]]);
     protected instances: any[] = [];
     protected services: Map<string, any> = new Map([[Componentree.name, this]]);
+    protected parameterSources: DataParameterSource[] = []; // NOTE this could be done through pipeline extensions later on, but they need more work before they can be used
 
-    // TYPESCRIPT WHY DO PARAMETER DECORATORS NO LONGER WORK?! (key is now always undefined)
     constructor(@noinject private config: ComponentreeConfiguration = defaultConfiguration) {
         this.config = { ...defaultConfiguration, ...this.config };
         global.register = this.Register.bind(this);
         global.earlyComponents = global.earlyComponents.filter(component => this.Register(component));
         (async () => {
             // 1 Load files
-            const filesLoaded = (await glob(`**/*.${this.config.base}.js`)).map(file => require(`${process.cwd()}/${file}`) && this.Log(`Loaded ${file}`)).length;
+            this.Log(`CWD: ${process.cwd()}`);
+            const filesLoaded = (await glob(`**/*.${this.config.base}.js`, { symlinks: true })).map(file => {
+                this.Log(`Loading ${file}`);
+                require(`${process.cwd()}/${file}`);
+                this.Log(`Loaded ${file}`);
+            }).length;
             // 2 Validate injections and inits (checks they exist, checks for circularity/codependence)
-            if (filesLoaded === 0) this.Log('Loaded 0 files!');
+            this.Log(`Loaded ${this.components.size} components from ${filesLoaded} files`);
             // Need a better/cleaner method to do the following, just short on time to do it
             const circularityMessage = 'Circularity check';
             let circularityErrors: number = 0;
@@ -86,7 +120,8 @@ export class Componentree {
             });
             if (circularityErrors === 0) this.Log(`${circularityMessage} succeeded`);
             else throw new Error(`${circularityMessage} failed with ${circularityErrors} error${circularityErrors === 1 ? '' : 's'}`);
-            // For each component, check for circularity
+            // Load and instantiate pipeline extensions
+            this.parameterSources = await mapAsync(this.GetByInheritance(DataParameterSource), component => this.GetInstance(component));
             // 2 Instantiate services (ordered by inits)
             await mapAsync(Array.from(this.components.values()).filter(container => container.component.service), async container => {
                 if (!this.services.has(container.component.name)) {
@@ -109,9 +144,9 @@ export class Componentree {
      */
     private GetInjectionTree(component: Component, dependencyChain?: string[]) {
         if (!dependencyChain) dependencyChain = [component.name]; // Create with parent as origin
-        const names = this.GetInjectionNames(component);
+        const injections = this.GetInjectionNames(component).filter(ij => ij.type === ParameterType.INJECTION).map(ij => ij.name);
         // Check for a collision with any members of the current injection set
-        names.forEach(name => {
+        injections.forEach(name => {
             /**
              * Typescript, why can't you tell I'm checking and assigning to dependencyChain
              * like LITERALLY a couple of lines above?
@@ -119,7 +154,7 @@ export class Componentree {
             if (dependencyChain!.indexOf(name) > -1) throw new CircularityError(dependencyChain!.concat(name));
         });
         // No errors with this set, so branch and check the injections of each of the subsequent ones
-        return names ? names.reduce<IndexedObject>((p, c) => {
+        return injections ? injections.reduce<IndexedObject>((p, c) => {
             p[c] = this.GetInjectionTree(this.SafelyGetComponent(c), Array.from(dependencyChain!).concat(c)); // Copy the array so each branch of injections isn't modifying the chain for the other
             return p;
         }, {}) : {};
@@ -146,23 +181,42 @@ export class Componentree {
         if (stringified.indexOf(`class ${t.name}`) !== 0) throw new Error(`Component is not a class: ${JSON.stringify(t)}`);
         const matches = stringified.match(/constructor.*?\(([^)]*)\)/);
         if (matches && matches.length === 2) {
-            return matches[1].replace(/\s/g, '').split(',').filter(n => (!t.noinjects || t.noinjects.indexOf(n) === -1) && n.length > 0); // NOTE change indexof here to includes once TS plays nice again
+            return matches[1].replace(/\s/g, '').split(',').map((n, i) => ({ name: n, type: (!t.noinjects || !t.noinjects.includes(i)) ? ParameterType.INJECTION : ParameterType.DATA })).filter(n => n.name.length > 0);
         } else return [];
     }
 
-    protected async Inject<T>(t: Component): Promise<T> {
-        const instance = Reflect.construct(t, await mapAsync(this.GetInjectionNames(t), async name => {
-            /**
+    protected async Inject<T, U={}>(t: Component, data?: U & { [key: string]: any }): Promise<T> {
+        const instance = Reflect.construct(t, await mapAsync(this.GetInjectionNames(t), async (ij, i) => {
+            if (ij.type === ParameterType.INJECTION) {
+                /**
               * NOTE source tracking for components is implemented by the source property in
               * ComponentContainer, but I haven't thought of a good way of how to get it yet
               * since components autonomously register. For the moment the stack trace will suffice.
               */
-            if (!this.components.has(name)) throw new Error(`Could not find component: ${name} in component ${t.name}`);
-            if (this.components.get(name)!.component.service) {
-                if (!this.services.get(name)) this.services.set(name, await this.Inject(this.components.get(name)!.component));
-                return this.services.get(name);
+                if (!this.components.has(ij.name)) throw new Error(`Could not find component: ${ij.name} in component ${t.name}`);
+                if (this.components.get(ij.name)!.component.service) {
+                    if (!this.services.get(ij.name)) this.services.set(ij.name, await this.Inject(this.components.get(ij.name)!.component));
+                    return this.services.get(ij.name);
+                } else {
+                    return await this.Inject(this.components.get(ij.name)!.component);
+                }
+            } else if (ij.type === ParameterType.DATA) {
+                // NOTE allow extension of this pipeline
+                if (data && data[ij.name]) {
+                    return data[ij.name];
+                }
+                /**
+                 * NOTE NOTE NOTE this can be done way more efficiently, switch to sync checking for whether a source
+                 * can or can't provide a given type before running in async
+                 */
+                const dataParam = await findAsync(this.parameterSources, parameterSource => parameterSource.GetParameter(t, ij.name, i));
+                if (dataParam !== undefined) {
+                    return dataParam;
+                } else {
+                    throw new Error(`Could not locate data for injection ${ij.name} of component ${t.name}`); // NOTE better error here lol
+                }
             } else {
-                return await this.Inject(this.components.get(name)!.component);
+                throw new Error(`Invalid ParameterType ${ij.type} for injection name ${ij.name}`);
             }
         }));
         if (t.initialisers) {
@@ -182,7 +236,7 @@ export class Componentree {
         return this.SafelyGetComponent(name);
     }
 
-    public GetInstance<T>(component: Component): Promise<T> {
+    public GetInstance<T, U = {}>(component: Component<T>, data?: { [key: string]: any } & U): Promise<T> {
         return this.Inject<T>(component);
     }
 
@@ -191,7 +245,7 @@ export class Componentree {
     }
 
     public GetByInheritance<T>(inherits: any, ...tags: string[]) {
-        return <T[]><unknown>Array.from(this.components.values()).filter(container => container.component.prototype instanceof inherits && (tags.length === 0 || container.component.tags && tags.every(tag => container.component.tags!.has(tag)))).map(container => container.component);
+        return <Component[]><unknown>Array.from(this.components.values()).filter(container => container.component.prototype instanceof inherits && (tags.length === 0 || container.component.tags && tags.every(tag => container.component.tags!.has(tag)))).map(container => container.component);
     }
 }
 
@@ -224,13 +278,29 @@ export function initialiser(t: any, key: string, desc: PropertyDescriptor) { // 
 }
 
 export function noinject(t: Component, key: string, index: number) {
-    (t.noinjects || (t.noinjects = [])) && t.noinjects.push(key);
+    // If key is undefined, assume the decorator is being called on the constructor (teeny bit of typescript weirdness)
+    // Noinject is only built to work on constructor parameters (because we're not recording the index against a method name)
+    if (key === undefined) (t.noinjects || (t.noinjects = [])) && t.noinjects.push(index);
 }
 
-export function noinjectclass(...noinjects: string[]) {
-    return (t: Component) => {
-        (t.noinjects || (t.noinjects = [])) && (t.noinjects = t.noinjects.concat(noinjects));
-    }
+// export function extension(t: any, key: string, desc: PropertyDescriptor) { // NOTE figure out the specific type of a prototype (without forcing prototype constructor's type to Function...) so that we can ensure that this decorator is only used on async methods!
+//     // if(!t.service) throw new Error(`Component ${t.name} must be a service to use init`); // This doesn't seem great. Could we automatically make things that use init functions services?
+//     // service(t); // NOTE need a way to get access to this here. Need to detect problems as much as possible.
+//     // (t.inits || (t.inits = [])) && t.inits.push(key); // NOTE find a more elegant way of doing this
+//     // console.log(` keys ${t.constructor} lol ${t.abc} k ${key} desc ${JSON.stringify(desc)}`);
+//     (t.constructor.initialisers || (t.constructor.initialisers = [])) && t.constructor.initialisers.push(key);
+// }
+
+// export interface InjectionPipelineExtension {
+//     CanProvideDataParameter(component: Component, parameterName: string): boolean;
+//     DataParameterSource?(component: Component, parameterName: string): Promise<any>;
+// }
+// export abstract class InjectionPipelineExtension {
+
+// }
+
+export abstract class DataParameterSource {
+    abstract GetParameter(component: Component, parameterName: string, parameterIndex: number): Promise<any>;
 }
 
 // For init, load order needs to be changed
