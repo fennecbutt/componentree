@@ -9,6 +9,8 @@
 import glob from 'glob-promise';
 import { map as mapAsync } from 'bluebird';
 
+const pkg = require('../package.json');
+
 export interface ComponentreeConfiguration {
     base?: string;
     debug?: boolean;
@@ -89,12 +91,13 @@ export class Componentree {
     protected parameterSources: DataParameterSource[] = []; // NOTE this could be done through pipeline extensions later on, but they need more work before they can be used
 
     constructor(@noinject private config: ComponentreeConfiguration = defaultConfiguration) {
+        this.Log(`🐾 Componentree version ${pkg.version}`);
         this.config = { ...defaultConfiguration, ...this.config };
         global.register = this.Register.bind(this);
         global.earlyComponents = global.earlyComponents.filter(component => this.Register(component));
         (async () => {
             // 1 Load files
-            this.Log(`CWD: ${process.cwd()}`);
+            this.Log(`Working directory: ${process.cwd()}`);
             const filesLoaded = (await glob(`**/*.${this.config.base}.js`, { symlinks: true })).map(file => {
                 this.Log(`Loading ${file}`);
                 require(`${process.cwd()}/${file}`);
