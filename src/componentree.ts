@@ -94,7 +94,7 @@ export class Componentree {
         this.Log(`🐾 Componentree version ${pkg.version}`);
         this.config = { ...defaultConfiguration, ...this.config };
         global.register = this.Register.bind(this);
-        global.earlyComponents = global.earlyComponents.filter(component => this.Register(component));
+        // console.log(`REBOUND register: ${global.register.toString()}`);
         (async () => {
             // 1 Load files
             this.Log(`Working directory: ${process.cwd()}`);
@@ -104,7 +104,11 @@ export class Componentree {
                 this.Log(`Loaded ${file}`);
             }).length;
             // 2 Validate injections and inits (checks they exist, checks for circularity/codependence)
-            this.Log(`Loaded ${this.components.size} components from ${filesLoaded} files`);
+
+            this.Log(`${global.earlyComponents.length} components were loaded early (${global.earlyComponents.map(c => c.name)})`);
+            global.earlyComponents = global.earlyComponents.filter(component => this.Register(component));
+
+            this.Log(`Loaded ${this.components.size} components from ${filesLoaded} files (${Array.from(this.components.keys())})`);
             // Need a better/cleaner method to do the following, just short on time to do it
             const circularityMessage = 'Circularity check';
             let circularityErrors: number = 0;
@@ -175,6 +179,7 @@ export class Componentree {
     }
 
     Register(component: Component, source: String | null = null) {
+        // console.log(`REGISTER CALLED: ${component.name}`);
         this.components.set(component.name, this.MakeComponentContainer(<Component>component, source));
     }
 
@@ -254,6 +259,8 @@ export class Componentree {
 
 // NOTE change all decorators to use a common metadata function, expose this to components to help them modify component metadata in a protected way
 export function component(t: Component) {
+    // console.log(`Registering component ${t.name}`);
+    // console.log(`Bound register: ${global.register.toString()}`);
     t.type = 'component'
     global.register(t);
 }
