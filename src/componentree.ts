@@ -45,7 +45,9 @@ const defaultConfiguration = {
     base: 'c' // NOTE force base of c or override with componentree.json?
 }
 
-global.register = (component: Component) => (global.earlyComponents || (global.earlyComponents = [])) && global.earlyComponents.push(component);
+if (global.register === undefined) {
+    global.register = (component: Component) => (global.earlyComponents || (global.earlyComponents = [])) && global.earlyComponents.push(component);
+}
 
 class CircularityError extends Error {
     constructor(public dependencyChain: string[]) {
@@ -188,7 +190,8 @@ export class Componentree {
         const stringified = t.toString();
         if (stringified.indexOf(`class ${t.name}`) !== 0) throw new Error(`Component is not a class: ${JSON.stringify(t)}`);
         const matches = stringified.match(/constructor.*?\(([^)]*)\)/);
-        if (matches && matches.length === 2) {
+        const commentedOut = stringified.match('//');
+        if ((!commentedOut || commentedOut.length === 0) && matches && matches.length === 2) {
             return matches[1].replace(/\s/g, '').split(',').map((n, i) => ({ name: n, type: (!t.noinjects || !t.noinjects.includes(i)) ? ParameterType.INJECTION : ParameterType.DATA })).filter(n => n.name.length > 0);
         } else return [];
     }
