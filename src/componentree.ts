@@ -140,7 +140,13 @@ export class Componentree {
                 }
             });
             // 3 Initialise services
-        })().catch(e => this.config.errorHandler instanceof Function ? this.config.errorHandler(e) : this.Log(e.stack || e));
+        })().catch(e => {
+            if (this.config.errorHandler instanceof Function) {
+                this.config.errorHandler(e);
+            }
+            console.log(e);
+            process.exit(1);
+        });
     }
     // TODO default params break injection, componentree loops and keeps instantiating itself
     // protected GenerateManifest() {
