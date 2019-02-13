@@ -196,7 +196,7 @@ export class Componentree {
         const stringified = t.toString();
         if (stringified.indexOf(`class ${t.name}`) !== 0) throw new Error(`Component is not a class: ${JSON.stringify(t)}`);
         const matches = stringified.match(/constructor.*?\(([^)]*)\)/);
-        const commentedOut = stringified.match('//');
+        const commentedOut = stringified.match(/\/\/\s*constructor\s*\(/);
         if ((!commentedOut || commentedOut.length === 0) && matches && matches.length === 2) {
             return matches[1].replace(/\s/g, '').split(',').map((n, i) => ({ name: n, type: (!t.noinjects || !t.noinjects.includes(i)) ? ParameterType.INJECTION : ParameterType.DATA })).filter(n => n.name.length > 0);
         } else return [];
