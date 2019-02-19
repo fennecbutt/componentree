@@ -138,7 +138,9 @@ export class Componentree {
                     this.services.set(container.component.name, await this.Inject(container.component));
                     this.Log(`Started service ${container.component.name}`);
                 }
-            });
+            }, {
+                    concurrency: 1
+                });
             // 3 Initialise services
         })().catch(e => {
             if (this.config.errorHandler instanceof Function) {
