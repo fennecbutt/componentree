@@ -24,7 +24,7 @@ export interface Component<T = any> extends Newable<T> {
     type?: string;
     service?: boolean;
     tags?: Set<string>;
-    noinjects?: number[];
+    noinjects?: { index: number; resolver?: string; }[];
     initialisers?: string[];
 }
 
@@ -90,9 +90,9 @@ export class Componentree {
     protected components: Map<string, ComponentContainer> = new Map([[Componentree.name, this.MakeComponentContainer(<Component>Componentree, __filename)]]);
     protected instances: any[] = [];
     protected services: Map<string, any> = new Map([[Componentree.name, this]]);
-    protected parameterSources: DataParameterSource[] = []; // NOTE this could be done through pipeline extensions later on, but they need more work before they can be used
+    protected parameterSources: Map<string, DataParameterSource> = new Map();
 
-    constructor(@noinject private config: ComponentreeConfiguration = defaultConfiguration) {
+    constructor(@noinject() private config: ComponentreeConfiguration = defaultConfiguration) {
         this.Log(`🐾 Componentree version ${pkg.version}`);
         this.config = { ...defaultConfiguration, ...this.config };
         global.register = this.Register.bind(this);
@@ -130,7 +130,9 @@ export class Componentree {
             if (circularityErrors === 0) this.Log(`${circularityMessage} succeeded`);
             else throw new Error(`${circularityMessage} failed with ${circularityErrors} error${circularityErrors === 1 ? '' : 's'}`);
             // Load and instantiate pipeline extensions
-            this.parameterSources = await mapAsync(this.GetByInheritance(DataParameterSource), component => this.GetInstance(component));
+            await mapAsync(this.GetByInheritance(DataParameterSource), async component => {
+                this.parameterSources.set(component.name, await this.GetInstance(component));
+            });
             // 2 Instantiate services (ordered by inits)
             await mapAsync(Array.from(this.components.values()).filter(container => container.component.service), async container => {
                 if (!this.services.has(container.component.name)) {
@@ -200,7 +202,7 @@ export class Componentree {
         const matches = stringified.match(/constructor.*?\(([^)]*)\)/);
         const commentedOut = stringified.match(/\/\/\s*constructor\s*\(/);
         if ((!commentedOut || commentedOut.length === 0) && matches && matches.length === 2) {
-            return matches[1].replace(/\s/g, '').split(',').map((n, i) => ({ name: n, type: (!t.noinjects || !t.noinjects.includes(i)) ? ParameterType.INJECTION : ParameterType.DATA })).filter(n => n.name.length > 0);
+            return matches[1].replace(/\s/g, '').split(',').map((n, i) => ({ name: n, type: (!t.noinjects || !t.noinjects.map(ni => ni.index).includes(i)) ? ParameterType.INJECTION : ParameterType.DATA })).filter(n => n.name.length > 0);
         } else return [];
     }
 
@@ -220,20 +222,25 @@ export class Componentree {
                     return await this.Inject(this.components.get(ij.name)!.component);
                 }
             } else if (ij.type === ParameterType.DATA) {
-                // NOTE allow extension of this pipeline
-                if (data && data[ij.name]) {
-                    return data[ij.name];
+                let dataValue: any = undefined;
+
+                // Get data source
+                let source = t.noinjects ? t.noinjects.find(ni => ni.index === i) : null;
+
+                if (source && source.resolver) {
+                    if (!this.parameterSources.has(source.resolver)) {
+                        throw new Error(`No data parameter source: ${source.resolver} for injection ${ij.name} of component ${t.name}`);
+                    }
+                    dataValue = await this.parameterSources.get(source.resolver)!.GetParameter(t, ij.name, i);
+                } else if (data) {
+                    dataValue = data[ij.name];
                 }
-                /**
-                 * NOTE NOTE NOTE this can be done way more efficiently, switch to sync checking for whether a source
-                 * can or can't provide a given type before running in async
-                 */
-                const dataParam = await findAsync(this.parameterSources, parameterSource => parameterSource.GetParameter(t, ij.name, i));
-                if (dataParam !== undefined) {
-                    return dataParam;
-                } else {
-                    throw new Error(`Could not locate data for injection ${ij.name} of component ${t.name}`); // NOTE better error here lol
+
+                if (dataValue === undefined) {
+                    throw new Error(`Could not locate data for injection ${ij.name} of component ${t.name}`);
                 }
+
+                return dataValue;
             } else {
                 throw new Error(`Invalid ParameterType ${ij.type} for injection name ${ij.name}`);
             }
@@ -298,10 +305,12 @@ export function initialiser(t: any, key: string, desc: PropertyDescriptor) { // 
     (t.constructor.initialisers || (t.constructor.initialisers = [])) && t.constructor.initialisers.push(key);
 }
 
-export function noinject(t: Component, key: string, index: number) {
-    // If key is undefined, assume the decorator is being called on the constructor (teeny bit of typescript weirdness)
-    // Noinject is only built to work on constructor parameters (because we're not recording the index against a method name)
-    if (key === undefined) (t.noinjects || (t.noinjects = [])) && t.noinjects.push(index);
+export function noinject(source?: Component) {
+    return (t: Component, key: string, index: number) => {
+        // If key is undefined, assume the decorator is being called on the constructor (teeny bit of typescript weirdness)
+        // Noinject is only built to work on constructor parameters (because we're not recording the index against a method name)
+        if (key === undefined) (t.noinjects || (t.noinjects = [])) && t.noinjects.push({ index, resolver: source ? source.name : undefined });
+    }
 }
 
 // export function extension(t: any, key: string, desc: PropertyDescriptor) { // NOTE figure out the specific type of a prototype (without forcing prototype constructor's type to Function...) so that we can ensure that this decorator is only used on async methods!
