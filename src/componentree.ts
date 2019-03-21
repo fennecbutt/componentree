@@ -263,7 +263,7 @@ export class Componentree {
     }
 
     public GetInstance<T, U = {}>(component: Component<T>, data?: { [key: string]: any } & U): Promise<T> {
-        return this.Inject<T>(component);
+        return this.Inject<T>(component, data);
     }
 
     public GetByTags(...tags: string[]) {
