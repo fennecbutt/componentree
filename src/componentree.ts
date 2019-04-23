@@ -74,7 +74,7 @@ enum ParameterType {
 //     }, [[], []]);
 // }
 
-async function findAsync<T, U= any>(items: T[], findFn: (item: T) => Promise<U>): Promise<U | undefined> {
+async function findAsync<T, U = any>(items: T[], findFn: (item: T) => Promise<U>): Promise<U | undefined> {
     let item: T | undefined = undefined;
     for (let i = 0; i < items.length; i++) {
         const result = await findFn(items[i]);
@@ -89,7 +89,7 @@ async function findAsync<T, U= any>(items: T[], findFn: (item: T) => Promise<U>)
 export class Componentree {
     protected components: Map<string, ComponentContainer> = new Map([[Componentree.name, this.MakeComponentContainer(<Component>Componentree, __filename)]]);
     protected instances: any[] = [];
-    protected services: Map<string, any> = new Map([[Componentree.name, this]]);
+    protected services: Map<string, Promise<any>> = new Map([[Componentree.name, Promise.resolve(this)]]);
     protected parameterSources: Map<string, DataParameterSource> = new Map();
 
     constructor(@noinject() private config: ComponentreeConfiguration = defaultConfiguration) {
@@ -101,7 +101,6 @@ export class Componentree {
             // 1 Load files
             this.Log(`Working directory: ${process.cwd()}`);
             const filesLoaded = (await glob(`**/*.${this.config.base}.js`, { symlinks: true })).map(file => {
-                this.Log(`Loading ${file}`);
                 require(`${process.cwd()}/${file}`);
                 this.Log(`Loaded ${file}`);
             }).length;
@@ -137,12 +136,10 @@ export class Componentree {
             await mapAsync(Array.from(this.components.values()).filter(container => container.component.service), async container => {
                 if (!this.services.has(container.component.name)) {
                     this.Log(`Starting service ${container.component.name}`);
-                    this.services.set(container.component.name, await this.Inject(container.component));
+                    this.services.set(container.component.name, this.Inject(container.component));
                     this.Log(`Started service ${container.component.name}`);
                 }
-            }, {
-                    concurrency: 1
-                });
+            });
             // 3 Initialise services
         })().catch(e => {
             if (this.config.errorHandler instanceof Function) {
@@ -191,7 +188,6 @@ export class Componentree {
     }
 
     Register(component: Component, source: String | null = null) {
-        // console.log(`REGISTER CALLED: ${component.name}`);
         this.components.set(component.name, this.MakeComponentContainer(<Component>component, source));
     }
 
@@ -206,7 +202,7 @@ export class Componentree {
         } else return [];
     }
 
-    protected async Inject<T, U={}>(t: Component, data?: U & { [key: string]: any }): Promise<T> {
+    protected async Inject<T, U = {}>(t: Component, data?: U & { [key: string]: any }): Promise<T> {
         const instance = Reflect.construct(t, await mapAsync(this.GetInjectionNames(t), async (ij, i) => {
             if (ij.type === ParameterType.INJECTION) {
                 /**
@@ -216,8 +212,8 @@ export class Componentree {
               */
                 if (!this.components.has(ij.name)) throw new Error(`Could not find component: ${ij.name} in component ${t.name}`);
                 if (this.components.get(ij.name)!.component.service) {
-                    if (!this.services.get(ij.name)) this.services.set(ij.name, await this.Inject(this.components.get(ij.name)!.component));
-                    return this.services.get(ij.name);
+                    if (!this.services.get(ij.name)) this.services.set(ij.name, this.Inject(this.components.get(ij.name)!.component));
+                    return await this.services.get(ij.name);
                 } else {
                     return await this.Inject(this.components.get(ij.name)!.component);
                 }
@@ -277,8 +273,6 @@ export class Componentree {
 
 // NOTE change all decorators to use a common metadata function, expose this to components to help them modify component metadata in a protected way
 export function component(t: Component) {
-    // console.log(`Registering component ${t.name}`);
-    // console.log(`Bound register: ${global.register.toString()}`);
     t.type = 'component'
     global.register(t);
 }
