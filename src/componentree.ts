@@ -15,6 +15,7 @@ export interface ComponentreeConfiguration {
     base?: string;
     debug?: boolean;
     errorHandler?: (e: any) => any;
+    caselessInjections?: boolean;
 }
 
 export type Newable<T> = new (...args: any[]) => T;
@@ -74,28 +75,18 @@ enum ParameterType {
 //     }, [[], []]);
 // }
 
-async function findAsync<T, U = any>(items: T[], findFn: (item: T) => Promise<U>): Promise<U | undefined> {
-    let item: T | undefined = undefined;
-    for (let i = 0; i < items.length; i++) {
-        const result = await findFn(items[i]);
-        if (result) {
-            return result;
-        }
-    }
-    return undefined;
-}
-
 @service
 export class Componentree {
     protected components: Map<string, ComponentContainer> = new Map([[Componentree.name, this.MakeComponentContainer(<Component>Componentree, __filename)]]);
     protected instances: any[] = [];
-    protected services: Map<string, Promise<any>> = new Map([[Componentree.name, Promise.resolve(this)]]);
+    protected services: Map<string, Promise<any>> = new Map();
     protected parameterSources: Map<string, DataParameterSource> = new Map();
 
     constructor(@noinject() private config: ComponentreeConfiguration = defaultConfiguration) {
         this.Log(`🐾 Componentree version ${pkg.version}`);
         this.config = { ...defaultConfiguration, ...this.config };
         global.register = this.Register.bind(this);
+        this.services.set(this.config.caselessInjections ? Componentree.name.toLowerCase() : Componentree.name, Promise.resolve(this));
         // console.log(`REBOUND register: ${global.register.toString()}`);
         (async () => {
             // 1 Load files
@@ -134,9 +125,11 @@ export class Componentree {
             });
             // 2 Instantiate services (ordered by inits)
             await mapAsync(Array.from(this.components.values()).filter(container => container.component.service), async container => {
-                if (!this.services.has(container.component.name)) {
-                    this.Log(`Starting service ${container.component.name}`);
-                    this.services.set(container.component.name, this.Inject(container.component));
+                const formattedName = this.config.caselessInjections ? container.component.name.toLowerCase() : container.component.name;
+                if (!this.services.has(formattedName)) {
+                    this.services.set(formattedName, this.Inject(container.component));
+                    // Prevent unhandled rejections if a service injection fails by making sure to await it
+                    await this.services.get(formattedName);
                     this.Log(`Started service ${container.component.name}`);
                 }
             });
@@ -144,9 +137,10 @@ export class Componentree {
         })().catch(e => {
             if (this.config.errorHandler instanceof Function) {
                 this.config.errorHandler(e);
+            } else {
+                console.log(e);
+                process.exit(1);
             }
-            console.log(e);
-            process.exit(1);
         });
     }
     // TODO default params break injection, componentree loops and keeps instantiating itself
@@ -188,7 +182,11 @@ export class Componentree {
     }
 
     Register(component: Component, source: String | null = null) {
-        this.components.set(component.name, this.MakeComponentContainer(<Component>component, source));
+        const name = this.config.caselessInjections ? component.name.toLowerCase() : component.name;
+        if (this.components.has(name)) {
+            throw new Error(`Duplicate component: ${component.name}`);
+        }
+        this.components.set(name, this.MakeComponentContainer(<Component>component, source));
     }
 
     protected GetInjectionNames(t: Component) {
@@ -198,7 +196,7 @@ export class Componentree {
         const matches = stringified.match(/constructor.*?\(([^)]*)\)/);
         const commentedOut = stringified.match(/\/\/\s*constructor\s*\(/);
         if ((!commentedOut || commentedOut.length === 0) && matches && matches.length === 2) {
-            return matches[1].replace(/\s/g, '').split(',').map((n, i) => ({ name: n, type: (!t.noinjects || !t.noinjects.map(ni => ni.index).includes(i)) ? ParameterType.INJECTION : ParameterType.DATA })).filter(n => n.name.length > 0);
+            return matches[1].replace(/\s|=\s+\w+/g, '').split(',').map((n, i) => ({ name: this.config.caselessInjections && (!t.noinjects || !t.noinjects.map(ni => ni.index).includes(i)) ? n.toLowerCase() : n, type: (!t.noinjects || !t.noinjects.map(ni => ni.index).includes(i)) ? ParameterType.INJECTION : ParameterType.DATA })).filter(n => n.name.length > 0);
         } else return [];
     }
 
@@ -255,7 +253,8 @@ export class Componentree {
     }
 
     public Get(name: string) {
-        return this.SafelyGetComponent(name);
+        const formattedName = this.config.caselessInjections ? name.toLowerCase() : name;
+        return this.SafelyGetComponent(formattedName);
     }
 
     public GetInstance<T, U = {}>(component: Component<T>, data?: { [key: string]: any } & U): Promise<T> {
