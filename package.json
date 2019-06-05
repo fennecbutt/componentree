@@ -1,6 +1,6 @@
 {
   "name": "componentree",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "description": "A component based decorator-driven injection framework.",
   "main": "build/componentree.js",
   "dependencies": {
