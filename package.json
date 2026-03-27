@@ -5,7 +5,7 @@
   "main": "build/componentree.js",
   "dependencies": {
     "bluebird": "^3.5.3",
-    "glob": "^7.1.2",
+    "glob": "^13.0.6",
     "glob-promise": "^3.4.0"
   },
   "devDependencies": {
